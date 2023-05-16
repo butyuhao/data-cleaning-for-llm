@@ -181,11 +181,14 @@ if __name__ == '__main__':
     print(''.join(train_datasets[0]))
 
     data_idx_list = [i for i in range(len(train_datasets))]
-    bit_map = [True] * len(train_datasets)
+    bit_map = np.array([True] * len(train_datasets))
+    bit_map_f = np.memmap('./bitmap_cache', dtype='bool', mode='w+', shape=(len(train_datasets)))
+    bit_map_f[:] = bit_map[:]
+
+    emb_cache = np.memmap('./emb_cache', dtype='float32', mode='w+', shape=(len(train_datasets), 384))
 
     from lru import LRU
-    lru_cache = LRU(2000) # 内存不够的情况下最好使用lru的dict，和多进程冲突
-    # lru_cache = {} # 内存充足的情况下启用此项，可以多进程
+    # lru_cache = LRU(2000) # 内存不够的情况下最好使用lru的dict，和多进程冲突
 
     emb_befor_clean = []
     # pre_cache
@@ -194,7 +197,7 @@ if __name__ == '__main__':
         cur_data = ''.join(train_datasets[idx])
         emb = model.encode(cur_data)
         emb_befor_clean.append(emb)
-        lru_cache[cur_data] = emb
+        emb_cache[idx,:] = emb
     # torch.save(emb_befor_clean, 'emb_befor_clean.pt')
 
     temp_highdim = np.array(emb_befor_clean)
@@ -207,10 +210,9 @@ if __name__ == '__main__':
 
     # data_idx_chunk = data_idx_list
 
-    def calc_similarity(data_idx_chunk):
+    def calc_similarity(bit_map, data_idx_chunk):
 
-        global bit_map
-        global lru_cache
+        global emb_cache
 
         for idx_i in tqdm(data_idx_chunk):
             if not bit_map[idx_i]:
@@ -223,17 +225,9 @@ if __name__ == '__main__':
                     continue
                 cmp_data = ''.join(train_datasets[idx_j])
 
-                if cur_data not in lru_cache:
-                    emb1 = model.encode(cur_data)
-                    lru_cache[cur_data] = emb1
-                else:
-                    emb1 = lru_cache[cur_data]
+                emb1 = emb_cache[idx_i,:]
 
-                if cmp_data not in lru_cache:
-                    emb2 = model.encode(cmp_data)
-                    lru_cache[cmp_data] = emb2
-                else:
-                    emb2 = lru_cache[cmp_data]
+                emb2 = emb_cache[idx_j,:]
 
                 cos_sim = util.cos_sim(emb1, emb2)
                 cos_sim = cos_sim.item()
@@ -257,14 +251,14 @@ if __name__ == '__main__':
 
 
     # calc_similarity(data_idx_chunk)
-    num_cpus = 1 #cpu_count()
+    num_cpus = cpu_count()
     docs = data_idx_list
     chunk_size = ceil(len(docs) / num_cpus)
     chunks = [docs[x:x + chunk_size] for x in range(0, len(docs), chunk_size)]
     # 将数据切成cpu个数份
-    Parallel(n_jobs=num_cpus, require='sharedmem')(delayed(calc_similarity)(data_idx_chunk=chunk) for chunk in chunks)
+    Parallel(n_jobs=num_cpus)(delayed(calc_similarity)(bit_map=bit_map_f, data_idx_chunk=chunk) for chunk in chunks)
     # 把几个cpu的计算结果拼起来
-    torch.save(bit_map, 'bit_map.pt') # save in case error
+    torch.save(list(bit_map_f), 'bit_map.pt') # save in case error
     # bit_map = torch.load('bit_map.pt')
 
     def get_dataset_type(data_set):
@@ -340,10 +334,10 @@ if __name__ == '__main__':
     emb_after_clean = []
     # pre_cache
     for idx in range(len(train_datasets)):
-        if not bit_map[idx]:
+        if not bit_map_f[idx]:
             continue
         cur_data = ''.join(train_datasets[idx])
-        emb = lru_cache[cur_data]
+        emb = emb_cache[idx,:]
         emb_after_clean.append(emb)
 
 
@@ -357,7 +351,7 @@ if __name__ == '__main__':
 
     print(f"before clean len: {len(train_datasets)}")
 
-    print(f"after clean len: {bit_map.count(True)}")
+    print(f"after clean len: {list(bit_map_f).count(True)}")
 
 
 
