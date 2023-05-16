@@ -157,16 +157,12 @@ class InstructionDataset(Dataset):
         data = self.dataset[idx]
         return (data[self.instruction_column], data[self.response_column])
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press ⌘F8 to toggle the breakpoint.
-
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     # 数据读取-支持单轮和多轮格式
     # 去重复的时候认为是一个大数据集，保存的时候再根据bit_map分别进行保存
-    threshold = 0.8
+    threshold = 0.88
 
     belle_dialog_path = './data/opensource_data/BELLE_dialog.jsonl'
     belle_dialog_dataset = MyDialogue(mode='sft', cache_dir=belle_dialog_path)
@@ -188,7 +184,8 @@ if __name__ == '__main__':
     bit_map = [True] * len(train_datasets)
 
     from lru import LRU
-    lru_cache = LRU(2000)
+    lru_cache = LRU(2000) # 内存不够的情况下最好使用lru的dict，和多进程冲突
+    # lru_cache = {} # 内存充足的情况下启用此项，可以多进程
 
     emb_befor_clean = []
     # pre_cache
@@ -198,7 +195,7 @@ if __name__ == '__main__':
         emb = model.encode(cur_data)
         emb_befor_clean.append(emb)
         lru_cache[cur_data] = emb
-    torch.save(emb_befor_clean, 'emb_befor_clean.pt')
+    # torch.save(emb_befor_clean, 'emb_befor_clean.pt')
 
     temp_highdim = np.array(emb_befor_clean)
     x_tsne = TSNE(n_components=2, learning_rate=100, random_state=501).fit_transform(temp_highdim)
@@ -212,11 +209,14 @@ if __name__ == '__main__':
 
     def calc_similarity(data_idx_chunk):
 
+        global bit_map
+        global lru_cache
+
         for idx_i in tqdm(data_idx_chunk):
             if not bit_map[idx_i]:
                 continue
             cur_data = ''.join(train_datasets[idx_i])
-            for idx_j in tqdm(data_idx_list):
+            for idx_j in data_idx_list:
                 if not bit_map[idx_j]:
                     continue
                 if idx_i == idx_j:
@@ -241,6 +241,11 @@ if __name__ == '__main__':
                 if cos_sim > threshold:
                     # now: keep the longer one
                     # todo: keep the one with lower ppl
+                    with open('sim1.txt', 'a+') as f:
+                        f.write(cur_data + '\n')
+                        f.write(cmp_data + '\n')
+                        f.write(str(cos_sim) + '\n\n')
+
 
                     if len(cur_data) > len(cmp_data):
                         bit_map[idx_j] = False
@@ -252,15 +257,15 @@ if __name__ == '__main__':
 
 
     # calc_similarity(data_idx_chunk)
-    num_cpus = 1  # cpu_count()
+    num_cpus = 1 #cpu_count()
     docs = data_idx_list
     chunk_size = ceil(len(docs) / num_cpus)
     chunks = [docs[x:x + chunk_size] for x in range(0, len(docs), chunk_size)]
     # 将数据切成cpu个数份
-    # Parallel(n_jobs=num_cpus)(delayed(calc_similarity)(data_idx_chunk=chunk) for chunk in chunks)
+    Parallel(n_jobs=num_cpus, require='sharedmem')(delayed(calc_similarity)(data_idx_chunk=chunk) for chunk in chunks)
     # 把几个cpu的计算结果拼起来
-    # torch.save(bit_map, 'bit_map.pt') # save in case error
-    bit_map = torch.load('bit_map.pt')
+    torch.save(bit_map, 'bit_map.pt') # save in case error
+    # bit_map = torch.load('bit_map.pt')
 
     def get_dataset_type(data_set):
 
@@ -349,6 +354,10 @@ if __name__ == '__main__':
     plt.legend(fontsize=10)
     plt.title("after clean")
     plt.show()
+
+    print(f"before clean len: {len(train_datasets)}")
+
+    print(f"after clean len: {bit_map.count(True)}")
 
 
 
